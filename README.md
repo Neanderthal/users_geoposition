@@ -1,6 +1,15 @@
 # QR Geoposition Tracker
 
-Print a QR code in a newspaper or flyer. When a reader scans it, the system silently records their GPS location into an Excel file, then sends them to your webpage. No names, no cookies, no personal data — just coordinates and a timestamp.
+```
+        ╔═══╗ ╔═══╗           ╔═══════════════════════════════╗
+        ║▓▓▓║ ║▓▓▓║           ║                               ║
+        ║▓ ▓║▄║▓ ▓║           ║   QR  GEOPOSITION  TRACKER    ║
+        ╚═══╝ ╚═══╝           ║                               ║
+        ▓▓▓▓▓▓▓▓▓▓▓           ║   scan  ·  locate  ·  track   ║
+        ╔═══╗ ╔═══╗           ║                               ║
+        ║▓ ▓║ ║▓ ▓║           ╚═══════════════════════════════╝
+        ╚═══╝ ╚═══╝
+```
 
 ## How it works
 
