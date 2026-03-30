@@ -1,0 +1,8 @@
+# RedHat / Amazon Linux / CentOS / Fedora
+docker_packages:
+  - docker
+certbot_packages: []
+certbot_install_method: pip
+nginx_conf_file: /etc/nginx/conf.d/geoposition.conf
+nginx_enable_site: false
+docker_compose_install_method: binary

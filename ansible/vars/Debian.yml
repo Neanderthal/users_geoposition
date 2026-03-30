@@ -1,0 +1,14 @@
+# Debian / Ubuntu
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+  - docker-buildx-plugin
+certbot_packages:
+  - certbot
+  - python3-certbot-nginx
+certbot_install_method: package
+nginx_conf_file: /etc/nginx/sites-available/geoposition
+nginx_enable_site: true
+docker_compose_install_method: package

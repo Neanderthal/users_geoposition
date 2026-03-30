@@ -5,46 +5,77 @@
   vars_files:
     - vars.yml
 
+  handlers:
+    - name: reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
   tasks:
-    # --- Docker ---
-    - name: Install prerequisites
-      apt:
-        name:
-          - apt-transport-https
-          - ca-certificates
-          - curl
-          - gnupg
-          - lsb-release
-          - python3-pip
-        state: present
-        update_cache: true
+    # --- Load OS-specific variables ---
+    - name: Load OS-specific variables
+      include_vars: "{{ item }}"
+      with_first_found:
+        - "vars/{{ ansible_distribution }}.yml"
+        - "vars/{{ ansible_os_family }}.yml"
 
-    - name: Add Docker GPG key
-      shell: |
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
-          -o /etc/apt/keyrings/docker.asc
-        chmod a+r /etc/apt/keyrings/docker.asc
-      args:
-        creates: /etc/apt/keyrings/docker.asc
+    # ===================
+    #  Docker
+    # ===================
+    - name: Setup Docker APT repository (Debian)
+      when: ansible_os_family == "Debian"
+      block:
+        - name: Install APT prerequisites
+          apt:
+            name: [ca-certificates, curl, gnupg]
+            state: present
+            update_cache: true
 
-    - name: Add Docker repository
-      shell: |
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-          https://download.docker.com/linux/{{ ansible_distribution | lower }} \
-          $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-      args:
-        creates: /etc/apt/sources.list.d/docker.list
+        - name: Add Docker GPG key
+          shell: |
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
+              -o /etc/apt/keyrings/docker.asc
+            chmod a+r /etc/apt/keyrings/docker.asc
+          args:
+            creates: /etc/apt/keyrings/docker.asc
+
+        - name: Add Docker APT repository
+          shell: |
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+              https://download.docker.com/linux/{{ ansible_distribution | lower }} \
+              $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+          args:
+            creates: /etc/apt/sources.list.d/docker.list
+
+        - name: Update APT cache after adding Docker repo
+          apt:
+            update_cache: true
 
     - name: Install Docker
-      apt:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-compose-plugin
+      package:
+        name: "{{ docker_packages }}"
         state: present
-        update_cache: true
+
+    - name: Install Docker Compose + Buildx binaries (RedHat)
+      when: docker_compose_install_method == "binary"
+      shell: |
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          aarch64) COMPOSE_ARCH="aarch64"; BUILDX_ARCH="arm64" ;;
+          x86_64)  COMPOSE_ARCH="x86_64";  BUILDX_ARCH="amd64" ;;
+          *)       COMPOSE_ARCH="$ARCH";    BUILDX_ARCH="$ARCH" ;;
+        esac
+        mkdir -p /usr/local/lib/docker/cli-plugins
+        curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${COMPOSE_ARCH}" \
+          -o /usr/local/lib/docker/cli-plugins/docker-compose
+        chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+        BUILDX_VERSION=$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${BUILDX_ARCH}" \
+          -o /usr/local/lib/docker/cli-plugins/docker-buildx
+        chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+      args:
+        creates: /usr/local/lib/docker/cli-plugins/docker-buildx
 
     - name: Start and enable Docker
       systemd:
@@ -52,7 +83,9 @@
         state: started
         enabled: true
 
-    # --- App ---
+    # ===================
+    #  Application
+    # ===================
     - name: Create app directory
       file:
         path: "{{ app_dir }}"
@@ -88,13 +121,21 @@
       args:
         chdir: "{{ app_dir }}"
 
-    # --- Nginx + TLS ---
-    - name: Install Nginx and Certbot
-      apt:
-        name:
-          - nginx
-          - certbot
-          - python3-certbot-nginx
+    - name: Wait for app to be ready
+      uri:
+        url: "http://127.0.0.1:8000/docs"
+        status_code: 200
+      register: health
+      retries: 10
+      delay: 3
+      until: health.status == 200
+
+    # ===================
+    #  Nginx + TLS
+    # ===================
+    - name: Install Nginx
+      package:
+        name: nginx
         state: present
 
     - name: Create certbot webroot
@@ -103,9 +144,9 @@
         state: directory
         mode: "0755"
 
-    - name: Deploy nginx config (HTTP only for initial cert)
+    - name: Deploy nginx config (HTTP first)
       copy:
-        dest: /etc/nginx/sites-available/geoposition
+        dest: "{{ nginx_conf_file }}"
         content: |
           server {
               listen 80;
@@ -122,21 +163,47 @@
           }
         mode: "0644"
 
-    - name: Enable nginx site
+    - name: Enable nginx site (Debian)
+      when: nginx_enable_site
       file:
-        src: /etc/nginx/sites-available/geoposition
+        src: "{{ nginx_conf_file }}"
         dest: /etc/nginx/sites-enabled/geoposition
         state: link
 
-    - name: Remove default nginx site
+    - name: Remove default nginx configs
       file:
-        path: /etc/nginx/sites-enabled/default
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /etc/nginx/sites-enabled/default
+        - /etc/nginx/conf.d/default.conf
+      ignore_errors: true
 
-    - name: Reload Nginx
+    - name: Start and enable Nginx
       systemd:
         name: nginx
-        state: reloaded
+        state: restarted
+        enabled: true
+
+    # --- Certbot ---
+    - name: Install Certbot via pip (RedHat)
+      when: certbot_install_method == "pip"
+      block:
+        - name: Install pip
+          package:
+            name: python3-pip
+            state: present
+
+        - name: Install certbot via pip
+          pip:
+            name: [certbot, certbot-nginx]
+            state: present
+
+    - name: Install Certbot via package manager (Debian)
+      when: certbot_install_method == "package"
+      package:
+        name: "{{ certbot_packages }}"
+        state: present
 
     - name: Obtain TLS certificate
       shell: >
@@ -149,31 +216,36 @@
     - name: Deploy full nginx config with TLS
       template:
         src: nginx.conf.j2
-        dest: /etc/nginx/sites-available/geoposition
+        dest: "{{ nginx_conf_file }}"
+        mode: "0644"
+      notify: reload nginx
+
+    - name: Ensure cron directory exists
+      file:
+        path: /etc/cron.d
+        state: directory
+        mode: "0755"
+
+    - name: Setup certbot auto-renewal
+      copy:
+        dest: /etc/cron.d/certbot-renew
+        content: |
+          0 3 * * * root certbot renew --quiet --post-hook 'systemctl reload nginx'
         mode: "0644"
 
-    - name: Reload Nginx with TLS
+    - name: Final nginx reload
       systemd:
         name: nginx
         state: reloaded
 
-    - name: Enable certbot auto-renewal timer
-      systemd:
-        name: certbot.timer
-        state: started
-        enabled: true
-
-    # --- Firewall ---
-    - name: Allow HTTP/HTTPS through UFW
-      ufw:
-        rule: allow
-        name: "Nginx Full"
-      ignore_errors: true
-
+    # ===================
+    #  Done
+    # ===================
     - name: Print success
       debug:
         msg: |
           Deployment complete!
           Site: https://{{ domain }}
           API key: {{ api_key }}
+          Test: curl -H 'X-Api-Key: {{ api_key }}' https://{{ domain }}/api/campaigns
           Download: curl -H 'X-Api-Key: {{ api_key }}' https://{{ domain }}/api/download/CAMPAIGN_ID -o data.xlsx

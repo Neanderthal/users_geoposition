@@ -1,10 +1,4 @@
 campaigns:
-  # Example campaign - replace with your own
-  newspaper-spring-2026:
-    label: "Spring 2026 Newspaper Ad"
-    redirect_url: "https://example.com/spring-promo"
-
-  # Add more campaigns:
-  # my-campaign-id:
-  #   label: "Human-readable name"
-  #   redirect_url: "https://your-site.com/landing-page"
+  cvfill:
+    label: "CVFill.online"
+    redirect_url: "https://cvfill.online"
