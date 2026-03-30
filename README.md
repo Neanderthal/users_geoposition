@@ -1,16 +1,41 @@
 # QR Geoposition Tracker
 
-Generates QR codes for print media (newspapers, flyers). When scanned, the QR code opens a page that captures the reader's GPS coordinates, saves them to an XLSX file, and redirects to your content URL. No personal data is collected — only timestamp, latitude, and longitude.
+Print a QR code in a newspaper or flyer. When a reader scans it, the system silently records their GPS location into an Excel file, then sends them to your webpage. No names, no cookies, no personal data — just coordinates and a timestamp.
 
-## Requirements
+## How it works
 
-- A VPS with Ubuntu/Debian
-- Domain name pointed to the server
-- Python 3.12+ on your local machine (for QR code generation)
+```
+Reader scans QR  →  Phone asks "Allow location?"  →  GPS saved to Excel  →  Reader sees your webpage
+                                                      (if denied, reader
+                                                       still gets redirected)
+```
 
-## One-Click Deployment (Ansible)
+---
 
-### 1. Configure
+## Quick Install
+
+You need: a Linux server (VPS) with a domain name pointed to it, and a computer with Ansible installed.
+
+**Step 1.** Get the code:
+
+```bash
+git clone https://github.com/Neanderthal/users_geoposition.git
+cd users_geoposition
+```
+
+**Step 2.** Set up your campaigns — open `campaigns.yaml` and add your entries:
+
+```yaml
+campaigns:
+  spring-ad:
+    label: "Spring Newspaper Ad"
+    redirect_url: "https://your-site.com/spring-promo"
+```
+
+- The key (`spring-ad`) becomes part of the QR link — keep it short, no spaces
+- `redirect_url` is where readers end up after scanning
+
+**Step 3.** Configure the server — go into the `ansible/` folder and fill in two files:
 
 ```bash
 cd ansible
@@ -18,40 +43,29 @@ cp inventory.example.ini inventory.ini
 cp vars.example.yml vars.yml
 ```
 
-Edit `inventory.ini` — set your server host and SSH user:
+In `inventory.ini`, put your server address:
 
 ```ini
 [geoposition]
 geo.yourdomain.com ansible_user=root
 ```
 
-Edit `vars.yml`:
+In `vars.yml`, fill in your details:
 
 ```yaml
-domain: geo.yourdomain.com
-email: you@example.com       # Let's Encrypt
-api_key: your-secret-key     # for download API
-app_dir: /opt/geoposition
+domain: geo.yourdomain.com       # your domain
+email: you@example.com           # for the free TLS certificate
+api_key: pick-a-secret-password  # needed to download the Excel files later
+app_dir: /opt/geoposition        # where the app lives on the server
 ```
 
-Edit `campaigns.yaml` (in project root) with your campaigns:
-
-```yaml
-campaigns:
-  spring-ad-2026:
-    label: "Spring 2026 Newspaper Ad"
-    redirect_url: "https://your-site.com/spring-promo"
-```
-
-### 2. Deploy
+**Step 4.** Deploy — one command does everything (installs Docker, sets up HTTPS, starts the app):
 
 ```bash
 ansible-playbook -i inventory.ini deploy.yml
 ```
 
-This installs Docker, Nginx, Certbot (TLS), deploys the app, and starts everything. Done.
-
-### 3. Generate QR codes
+**Step 5.** Generate QR codes to print:
 
 ```bash
 cd ..
@@ -59,107 +73,71 @@ pip install -r requirements.txt
 BASE_URL=https://geo.yourdomain.com python generate_qr.py
 ```
 
-Print-ready PNGs are saved to `qr_codes/`.
+Your print-ready QR images are in the `qr_codes/` folder. Send them to your designer or printer.
 
-## Manual Installation
+That's it. The system is running.
 
-If you prefer not to use Ansible:
+---
 
-### 1. Clone and configure
+## Downloading the collected data
 
-```bash
-git clone <repo-url> users_geoposition
-cd users_geoposition
-```
-
-### 2. Set environment variables
-
-Edit `docker-compose.yml`:
-
-```yaml
-environment:
-  - BASE_URL=https://geo.yourdomain.com
-  - API_KEY=your-secret-key
-```
-
-### 3. Start
+Open this URL in a browser or use the command below — replace `your-secret` with the `api_key` you set earlier:
 
 ```bash
-docker compose up -d --build
+curl -H 'X-Api-Key: your-secret' \
+  https://geo.yourdomain.com/api/download/spring-ad \
+  -o spring-ad.xlsx
 ```
 
-The app listens on port `8000`. Put it behind a reverse proxy with TLS (see `ansible/templates/nginx.conf.j2` for an example).
+The Excel file has three columns:
 
-## Download API
+| timestamp | latitude | longitude |
+|---|---|---|
+| 2026-03-30T11:04:24+00:00 | 51.5074 | -0.1278 |
 
-All API endpoints require the `X-Api-Key` header.
-
-### List campaigns
+To see which campaigns have data:
 
 ```bash
-curl -H 'X-Api-Key: your-secret-key' https://geo.yourdomain.com/api/campaigns
+curl -H 'X-Api-Key: your-secret' https://geo.yourdomain.com/api/campaigns
 ```
 
-Response:
+---
 
-```json
-{
-  "spring-ad-2026": {"label": "Spring 2026 Newspaper Ad", "has_data": true}
-}
-```
+## Adding a new campaign later
 
-### Download XLSX
+1. Add a new entry to `campaigns.yaml`
+2. Redeploy: `cd ansible && ansible-playbook -i inventory.ini deploy.yml`
+3. Regenerate QR codes: `BASE_URL=https://geo.yourdomain.com python generate_qr.py`
+4. Print the new QR from `qr_codes/`
 
-```bash
-curl -H 'X-Api-Key: your-secret-key' \
-  https://geo.yourdomain.com/api/download/spring-ad-2026 \
-  -o spring-ad-2026.xlsx
-```
-
-Returns the XLSX file with columns: `timestamp`, `latitude`, `longitude`.
-
-## Campaign Management
-
-### Adding a campaign
-
-1. Add entry to `campaigns.yaml`
-2. Restart: `docker compose restart`
-3. Generate QR: `BASE_URL=https://geo.yourdomain.com python generate_qr.py`
-4. Print the PNG from `qr_codes/`
-
-### Redeploying after changes
-
-```bash
-cd ansible
-ansible-playbook -i inventory.ini deploy.yml
-```
-
-Or manually:
-
-```bash
-git pull
-docker compose up -d --build
-```
-
-## How the Scan Flow Works
-
-1. User scans QR code in newspaper
-2. Browser opens `https://geo.yourdomain.com/track/spring-ad-2026`
-3. Page requests GPS permission (shows a loading spinner)
-4. If allowed — coordinates are sent to the server and saved to XLSX
-5. User is redirected to the campaign's `redirect_url`
-6. If denied or timed out (8s) — user is redirected anyway, no data saved
+---
 
 ## Troubleshooting
 
-**Geolocation not working:**
-Browser geolocation requires HTTPS. Verify your TLS certificate is valid.
+| Problem | Cause | Fix |
+|---|---|---|
+| Location not captured | Browser blocks geolocation over HTTP | Make sure your domain uses HTTPS (the Ansible setup handles this) |
+| 404 when scanning | Campaign ID in URL doesn't match `campaigns.yaml` | Check for typos, redeploy after editing |
+| Excel file is empty | Readers are denying the location prompt | Expected — they still get redirected, you just don't get their coordinates |
+| Ansible fails at certificate | Domain DNS not pointing to server | Add an A record pointing your domain to the server IP, wait a few minutes |
 
-**404 on scan:**
-Campaign ID in URL must match a key in `campaigns.yaml`. Restart container after editing.
+## Project structure
 
-**Empty XLSX:**
-Users may be denying location permission. Test on a mobile device with GPS enabled.
-
-**Ansible fails at certbot:**
-Ensure your domain DNS A record points to the server and port 80 is open.
+```
+├── app/
+│   ├── main.py              # Web server (FastAPI)
+│   ├── storage.py           # Saves GPS data to Excel
+│   ├── config.py            # Settings
+│   └── templates/
+│       └── locate.html      # The page readers see (briefly)
+├── ansible/
+│   ├── deploy.yml           # One-click server setup
+│   ├── inventory.example.ini
+│   ├── vars.example.yml
+│   └── templates/           # Nginx and Docker configs
+├── generate_qr.py           # QR code generator
+├── campaigns.yaml           # Your campaigns
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
+```
