@@ -1,0 +1,12 @@
+services:
+  geoposition:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./campaigns.yaml:/app/campaigns.yaml:ro
+    environment:
+      - BASE_URL=https://{{ domain }}
+      - API_KEY={{ api_key }}
+    restart: unless-stopped

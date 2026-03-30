@@ -1,0 +1,179 @@
+---
+- name: Deploy QR Geoposition Tracker
+  hosts: geoposition
+  become: true
+  vars_files:
+    - vars.yml
+
+  tasks:
+    # --- Docker ---
+    - name: Install prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - python3-pip
+        state: present
+        update_cache: true
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
+          -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker repository
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+          https://download.docker.com/linux/{{ ansible_distribution | lower }} \
+          $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    # --- App ---
+    - name: Create app directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy application files
+      synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ app_dir }}/"
+        rsync_opts:
+          - "--exclude=ansible"
+          - "--exclude=.git"
+          - "--exclude=qr_codes"
+          - "--exclude=data"
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+
+    - name: Deploy docker-compose.yml from template
+      template:
+        src: docker-compose.yml.j2
+        dest: "{{ app_dir }}/docker-compose.yml"
+        mode: "0600"
+
+    - name: Create data directory
+      file:
+        path: "{{ app_dir }}/data"
+        state: directory
+        mode: "0755"
+
+    - name: Build and start containers
+      shell: docker compose up -d --build
+      args:
+        chdir: "{{ app_dir }}"
+
+    # --- Nginx + TLS ---
+    - name: Install Nginx and Certbot
+      apt:
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+        state: present
+
+    - name: Create certbot webroot
+      file:
+        path: /var/www/certbot
+        state: directory
+        mode: "0755"
+
+    - name: Deploy nginx config (HTTP only for initial cert)
+      copy:
+        dest: /etc/nginx/sites-available/geoposition
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }};
+              location /.well-known/acme-challenge/ {
+                  root /var/www/certbot;
+              }
+              location / {
+                  proxy_pass http://127.0.0.1:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+        mode: "0644"
+
+    - name: Enable nginx site
+      file:
+        src: /etc/nginx/sites-available/geoposition
+        dest: /etc/nginx/sites-enabled/geoposition
+        state: link
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Obtain TLS certificate
+      shell: >
+        certbot certonly --webroot -w /var/www/certbot
+        -d {{ domain }} --email {{ email }}
+        --agree-tos --non-interactive
+      args:
+        creates: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
+
+    - name: Deploy full nginx config with TLS
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/geoposition
+        mode: "0644"
+
+    - name: Reload Nginx with TLS
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Enable certbot auto-renewal timer
+      systemd:
+        name: certbot.timer
+        state: started
+        enabled: true
+
+    # --- Firewall ---
+    - name: Allow HTTP/HTTPS through UFW
+      ufw:
+        rule: allow
+        name: "Nginx Full"
+      ignore_errors: true
+
+    - name: Print success
+      debug:
+        msg: |
+          Deployment complete!
+          Site: https://{{ domain }}
+          API key: {{ api_key }}
+          Download: curl -H 'X-Api-Key: {{ api_key }}' https://{{ domain }}/api/download/CAMPAIGN_ID -o data.xlsx

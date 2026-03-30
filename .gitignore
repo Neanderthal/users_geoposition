@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+data/*.xlsx
+qr_codes/*.png
+ansible/inventory.ini
+ansible/vars.yml
+.env
